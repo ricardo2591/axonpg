@@ -20,3 +20,6 @@ build/
 # Datos locales Docker
 pgdata/
 logs/
+
+# Documentos personales locales
+*.pdf
