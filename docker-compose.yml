@@ -1,0 +1,22 @@
+services:
+  axonpg-db:
+    image: pgvector/pgvector:pg16
+    container_name: axonpg-db
+    restart: unless-stopped
+    ports:
+      - "${AXONPG_DB_PORT:-5435}:5432"
+    environment:
+      POSTGRES_DB: ${AXONPG_DB_NAME:-axonpg}
+      POSTGRES_USER: ${AXONPG_DB_USER:-axonpg}
+      POSTGRES_PASSWORD: ${AXONPG_DB_PASSWORD:-axonpg_dev_pass}
+    volumes:
+      - axonpg_pgdata:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AXONPG_DB_USER:-axonpg} -d ${AXONPG_DB_NAME:-axonpg}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  axonpg_pgdata:
