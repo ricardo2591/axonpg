@@ -10,13 +10,12 @@ import shutil
 import socket
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import questionary
-from prompt_toolkit.output.win32 import NoConsoleScreenBufferError
 from prompt_toolkit.styles import Style as PTStyle
 from rich import box
 from rich.console import Console
@@ -307,6 +306,24 @@ def _plain_select_fallback(message: str, options: list[SelectOption], default: s
     return default
 
 
+_T = TypeVar("_T")
+
+
+def _ask_with_fallback(prompt_fn: Callable[[], _T | None], fallback_fn: Callable[[], _T]) -> _T:
+    """Execute an interactive questionary prompt with non-TTY / non-console fallback."""
+    if not is_interactive_tty():
+        return fallback_fn()
+    try:
+        answer = prompt_fn()
+    except Exception as exc:
+        if type(exc).__name__ == "NoConsoleScreenBufferError":
+            return fallback_fn()
+        raise
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
+
+
 def select_option(
     message: str,
     options: list[SelectOption],
@@ -314,15 +331,13 @@ def select_option(
     lang: str,
 ) -> str:
     """Prompt the user with arrow-key selection in TTY, or numbered fallback otherwise."""
-    if not is_interactive_tty():
-        return _plain_select_fallback(message, options, default)
-
     choices = [
         questionary.Choice(title=_format_choice_title(opt, lang), value=opt.value)
         for opt in options
     ]
-    try:
-        answer = questionary.select(
+
+    def _ask() -> str | None:
+        return questionary.select(
             message=message,
             choices=choices,
             default=default,
@@ -334,60 +349,46 @@ def select_option(
             use_indicator=False,
             instruction=f"({t('nav_hint', lang)})",
         ).ask()
-    except NoConsoleScreenBufferError:
-        return _plain_select_fallback(message, options, default)
 
-    if answer is None:
-        raise KeyboardInterrupt
-    return str(answer)
+    return str(_ask_with_fallback(_ask, lambda: _plain_select_fallback(message, options, default)))
+
+
+def _plain_text_fallback(message: str, default: str = "", secret: bool = False) -> str:
+    suffix = f" [{default}]" if default and not secret else ""
+    raw = getpass.getpass(f"{message}{suffix}: ") if secret else input(f"{message}{suffix}: ")
+    cleaned = raw.strip()
+    return cleaned if cleaned else default
 
 
 def prompt_text(message: str, default: str = "", secret: bool = False) -> str:
     """Prompt for freeform or masked secret input with interactive styling and TTY fallback."""
-    if not is_interactive_tty():
-        suffix = f" [{default}]" if default and not secret else ""
-        raw = getpass.getpass(f"{message}{suffix}: ") if secret else input(f"{message}{suffix}: ")
-        cleaned = raw.strip()
-        return cleaned if cleaned else default
 
-    try:
+    def _ask() -> str | None:
         if secret:
-            ans = questionary.password(message=message, qmark="◆", style=AXON_Q_STYLE).ask()
-        else:
-            ans = questionary.text(message=message, default=default, qmark="◆", style=AXON_Q_STYLE).ask()
-    except NoConsoleScreenBufferError:
-        suffix = f" [{default}]" if default and not secret else ""
-        raw = getpass.getpass(f"{message}{suffix}: ") if secret else input(f"{message}{suffix}: ")
-        cleaned = raw.strip()
-        return cleaned if cleaned else default
+            return questionary.password(message=message, qmark="◆", style=AXON_Q_STYLE).ask()
+        return questionary.text(message=message, default=default, qmark="◆", style=AXON_Q_STYLE).ask()
 
-    if ans is None:
-        raise KeyboardInterrupt
-    cleaned = str(ans).strip()
+    raw = _ask_with_fallback(_ask, lambda: _plain_text_fallback(message, default=default, secret=secret))
+    cleaned = str(raw).strip()
     return cleaned if cleaned else default
+
+
+def _plain_confirm_fallback(message: str, default: bool = True) -> bool:
+    hint = "Y/n" if default else "y/N"
+    raw = input(f"{message} [{hint}]: ").strip().lower()
+    if not raw:
+        return default
+    return raw in {"y", "yes", "s", "si", "sí", "o", "oui"}
 
 
 def prompt_confirm(message: str, default: bool = True) -> bool:
     """Ask a yes/no confirmation question cleanly in TTY or plain mode."""
-    if not is_interactive_tty():
-        hint = "Y/n" if default else "y/N"
-        raw = input(f"{message} [{hint}]: ").strip().lower()
-        if not raw:
-            return default
-        return raw in {"y", "yes", "s", "si", "sí", "o", "oui"}
-
-    try:
-        ans = questionary.confirm(message=message, default=default, qmark="◆", style=AXON_Q_STYLE).ask()
-    except NoConsoleScreenBufferError:
-        hint = "Y/n" if default else "y/N"
-        raw = input(f"{message} [{hint}]: ").strip().lower()
-        if not raw:
-            return default
-        return raw in {"y", "yes", "s", "si", "sí", "o", "oui"}
-
-    if ans is None:
-        raise KeyboardInterrupt
-    return bool(ans)
+    return bool(
+        _ask_with_fallback(
+            lambda: questionary.confirm(message=message, default=default, qmark="◆", style=AXON_Q_STYLE).ask(),
+            lambda: _plain_confirm_fallback(message, default=default),
+        )
+    )
 
 
 @contextlib.contextmanager
